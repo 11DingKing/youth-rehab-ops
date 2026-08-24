@@ -85,12 +85,9 @@ func (s *CareService) Clear(ctx context.Context, actor domain.Actor, clearance d
 	if err := clearance.Validate(now); err != nil {
 		return domain.Clearance{}, err
 	}
-	created, err := s.repo.CreateClearanceRecord(ctx, actor, clearance)
-	if err != nil {
-		return domain.Clearance{}, err
-	}
-	if err := s.repo.ReleaseClearanceTrainingBlock(ctx, actor, clearance.IncidentID, now); err != nil {
-		return domain.Clearance{}, err
-	}
-	return created, nil
+	// GrantClearance records the clearance, marks the incident cleared and releases the
+	// training block in a single transaction, so a storage failure cannot leave the
+	// half-granted state where the injury reads cleared but the schedule is still blocked.
+	// A failed attempt changes no state, so a retry after recovery completes in one go.
+	return s.repo.GrantClearance(ctx, actor, clearance)
 }
