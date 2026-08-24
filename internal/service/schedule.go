@@ -31,8 +31,7 @@ func (s *ScheduleService) Attempt(ctx context.Context, actor domain.Actor, attem
 	}
 	attempt.RequestedBy = actor.UserID
 	attempt.CreatedAt = s.now.Now()
-	persistCtx := context.WithoutCancel(ctx)
-	return s.repo.AttemptSchedule(persistCtx, actor, attempt)
+	return s.repo.AttemptSchedule(ctx, actor, attempt)
 }
 
 func (s *ScheduleService) Override(ctx context.Context, actor domain.Actor, incidentID int64, reason string, ttl time.Duration) (domain.Override, error) {

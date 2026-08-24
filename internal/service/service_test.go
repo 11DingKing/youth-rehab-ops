@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -284,5 +285,30 @@ func TestScheduleInputValidationAndRoleBoundary(t *testing.T) {
 	}
 	if _, err := fixture.schedule.Override(context.Background(), actor(fixture.officer, "long"), 1, "reason", 25*time.Hour); !errors.Is(err, domain.ErrValidation) {
 		t.Fatalf("long override returned %v", err)
+	}
+}
+
+func TestCanceledScheduleAttemptLeavesNoDecisionOrAudit(t *testing.T) {
+	fixture := newServiceFixture(t)
+	view, err := fixture.incidents.Report(context.Background(), actor(fixture.coach, "report"), reportInput(fixture.participant.ID, "canceled-schedule-report"))
+	if err != nil {
+		t.Fatalf("report incident: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, attemptErr := fixture.schedule.Attempt(ctx, actor(fixture.coach, "canceled-schedule"),
+		domain.ScheduleAttempt{ParticipantID: fixture.participant.ID, IncidentID: view.ID,
+			SessionStartsAt: serviceTime.Add(time.Hour), IdempotencyKey: "canceled-schedule"})
+	if attemptErr == nil {
+		t.Fatal("canceled schedule attempt succeeded")
+	}
+	audits, err := fixture.store.ListAudit(context.Background(), "incident", fmt.Sprint(view.ID), domain.Page{Limit: 100})
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	for _, record := range audits.Items {
+		if record.Action == "schedule.attempted" {
+			t.Fatalf("canceled schedule left audit record: %+v", record)
+		}
 	}
 }

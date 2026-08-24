@@ -79,8 +79,7 @@ func (s *Store) AttemptSchedule(ctx context.Context, actor domain.Actor, attempt
 		if attempt.Allowed {
 			resultState = audit.Succeeded
 		}
-		auditCtx := context.WithoutCancel(ctx)
-		return appendAudit(auditCtx, tx, audit.Record{ActorID: actor.UserID, ActorRole: string(actor.Role), Action: "schedule.attempted",
+		return appendAudit(ctx, tx, audit.Record{ActorID: actor.UserID, ActorRole: string(actor.Role), Action: "schedule.attempted",
 			ObjectType: "incident", ObjectID: fmt.Sprint(attempt.IncidentID), Result: resultState, Reason: attempt.DecisionCode,
 			RequestID: actor.RequestID, CreatedAt: attempt.CreatedAt})
 	})
