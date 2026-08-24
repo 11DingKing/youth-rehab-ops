@@ -98,23 +98,30 @@ func (s *Store) ReturnReferral(ctx context.Context, actor domain.Actor, id, expe
 		if err := requireAffected(result, "referral"); err != nil {
 			return err
 		}
-		referral = current
-		return nil
-	})
-	if err != nil {
-		return domain.Referral{}, err
-	}
-
-	err = withTx(ctx, s.db, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `UPDATE incidents SET status=?,version=version+1,updated_at=? WHERE id=?`,
-			domain.IncidentTriaged, timeText(referral.UpdatedAt), referral.IncidentID); err != nil {
-			return fmt.Errorf("reopen incident after referral return: %w", err)
-		}
-		if err := appendAudit(ctx, tx, audit.Record{ActorID: actor.UserID, ActorRole: string(actor.Role), Action: "referral.returned",
-			ObjectType: "referral", ObjectID: fmt.Sprint(id), Result: audit.Succeeded, Reason: referral.ReturnedReason,
-			RequestID: actor.RequestID, CreatedAt: referral.UpdatedAt}); err != nil {
+		// Reopen the incident within the same transaction so a failure here rolls
+		// back the referral update above. Without this, a crashed second commit would
+		// leave the referral returned while the incident stays referred.
+		incident, err := scanIncident(tx.QueryRowContext(ctx, incidentSelect+" WHERE i.id=?", current.IncidentID))
+		if err != nil {
 			return err
 		}
+		if !incident.CanTransition(domain.IncidentTriaged) {
+			return fmt.Errorf("incident %s cannot be reopened after referral return: %w", incident.Status, domain.ErrConflict)
+		}
+		reopen, err := tx.ExecContext(ctx, `UPDATE incidents SET status=?,version=version+1,updated_at=? WHERE id=? AND version=?`,
+			domain.IncidentTriaged, timeText(now), incident.ID, incident.Version)
+		if err != nil {
+			return fmt.Errorf("reopen incident after referral return: %w", err)
+		}
+		if err := requireAffected(reopen, "incident"); err != nil {
+			return err
+		}
+		if err := appendAudit(ctx, tx, audit.Record{ActorID: actor.UserID, ActorRole: string(actor.Role), Action: "referral.returned",
+			ObjectType: "referral", ObjectID: fmt.Sprint(id), Result: audit.Succeeded, Reason: current.ReturnedReason,
+			RequestID: actor.RequestID, CreatedAt: now}); err != nil {
+			return err
+		}
+		referral = current
 		return nil
 	})
 	return referral, err

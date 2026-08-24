@@ -193,3 +193,63 @@ func TestReturnedReferralReopensTriageWithoutDeletingHistory(t *testing.T) {
 		t.Fatalf("returned referral accepted directly: %v", err)
 	}
 }
+
+// TestReturnReferralLeavesNoHalfReturnedStateOnFailure reproduces the reported
+// symptom where a return request reported an error but the referral was later
+// found returned while its incident stayed referred. The return must be atomic:
+// if any post-update step fails, the referral must remain in its returnable
+// state so the health professional can retry once the fault clears.
+func TestReturnReferralLeavesNoHalfReturnedStateOnFailure(t *testing.T) {
+	fixture := newWorkflowFixture(t)
+	_, err := fixture.store.TriageIncident(context.Background(), domain.Actor{UserID: fixture.officer.ID, Role: fixture.officer.Role, RequestID: "triage"},
+		fixture.incident.ID, repository.TriageInput{Severity: domain.SeverityModerate, StopTraining: true, PublicGuidance: "refer", Expected: 1}, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	referral, err := fixture.store.CreateReferral(context.Background(), domain.Actor{UserID: fixture.officer.ID, Role: fixture.officer.Role, RequestID: "refer"},
+		domain.Referral{IncidentID: fixture.incident.ID, Organization: "Clinic", Reason: "assessment", Status: domain.ReferralRequested,
+			Version: 1, CreatedAt: testTime, UpdatedAt: testTime})
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := fixture.store.AcceptReferral(context.Background(), domain.Actor{UserID: fixture.professional.ID, Role: fixture.professional.Role, RequestID: "accept"},
+		referral.ID, referral.Version)
+	if err != nil {
+		t.Fatalf("AcceptReferral: %v", err)
+	}
+	// Force the incident reopen step to fail by moving the incident into a state
+	// that cannot transition back to triaged while the referral stays accepted.
+	if _, err := fixture.store.db.Exec(`UPDATE incidents SET status=? WHERE id=?`, domain.IncidentClosed, fixture.incident.ID); err != nil {
+		t.Fatalf("seed incident state: %v", err)
+	}
+
+	_, err = fixture.store.ReturnReferral(context.Background(), domain.Actor{UserID: fixture.professional.ID, Role: fixture.professional.Role, RequestID: "return"},
+		referral.ID, accepted.Version, "guardian consent document missing")
+	if !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("return against non-reopenable incident want conflict, got %v", err)
+	}
+
+	// The referral must NOT have been marked returned: no half-completed state.
+	unchanged, err := fixture.store.GetReferral(context.Background(), referral.ID)
+	if err != nil {
+		t.Fatalf("GetReferral after failed return: %v", err)
+	}
+	if unchanged.Status != domain.ReferralAccepted || unchanged.ReturnedReason != "" || unchanged.Version != accepted.Version {
+		t.Fatalf("referral mutated by failed return: %+v", unchanged)
+	}
+
+	// Once the fault clears (incident is restored to referred), the return must
+	// succeed on the same version the professional originally held.
+	if _, err := fixture.store.db.Exec(`UPDATE incidents SET status=? WHERE id=?`, domain.IncidentReferred, fixture.incident.ID); err != nil {
+		t.Fatalf("restore incident state: %v", err)
+	}
+	retried, err := fixture.store.ReturnReferral(context.Background(), domain.Actor{UserID: fixture.professional.ID, Role: fixture.professional.Role, RequestID: "retry"},
+		referral.ID, accepted.Version, "guardian consent document missing")
+	if err != nil || retried.Status != domain.ReferralReturned {
+		t.Fatalf("retry return after fault cleared=%+v err=%v", retried, err)
+	}
+	incident, err := fixture.store.GetIncident(context.Background(), fixture.incident.ID)
+	if err != nil || incident.Status != domain.IncidentTriaged {
+		t.Fatalf("incident after retried return=%+v err=%v", incident, err)
+	}
+}
