@@ -164,3 +164,32 @@ func TestWorkerRunStopsOnParentCancellation(t *testing.T) {
 		t.Fatal("worker did not stop after cancellation")
 	}
 }
+
+// TestWorkerSkipsRetryWhenParentCanceled reproduces the stop flow: the venue
+// stop cancels the worker (parent) context while the sender is still in flight.
+// The sender observes the cancellation and returns a transient failure. The
+// worker must not persist a new retry record for that job, otherwise a later
+// pass re-claims it and generates fresh retry rows after the stop.
+func TestWorkerSkipsRetryWhenParentCanceled(t *testing.T) {
+	repo := &fakeJobs{jobs: []repository.NotificationJob{{ID: 5, NotificationID: 55, Attempts: 0, MaxAttempts: 10}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	worker := testWorker(repo, senderFunc(func(ctx context.Context, id int64) error {
+		cancel()
+		<-ctx.Done()
+		return ctx.Err()
+	}))
+	if err := worker.ProcessDue(ctx); err == nil {
+		t.Fatal("canceled pass returned nil")
+	}
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	if len(repo.retried) != 0 {
+		t.Fatalf("canceled transient failure wrote retry rows: %+v", repo.retried)
+	}
+	if len(repo.failed) != 0 {
+		t.Fatalf("canceled transient failure wrote failure rows: %+v", repo.failed)
+	}
+	if len(repo.completed) != 0 {
+		t.Fatalf("canceled transient failure wrote completion rows: %+v", repo.completed)
+	}
+}

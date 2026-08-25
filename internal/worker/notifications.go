@@ -99,18 +99,18 @@ func (w *NotificationWorker) processOne(parent context.Context, job repository.N
 		return fmt.Errorf("notification %d permanently failed: %w", job.NotificationID, err)
 	}
 	delay := backoff(job.Attempts + 1)
-	retryCtx := retryPersistenceContext(parent)
-	if finishErr := w.repo.RetryNotificationJob(retryCtx, job.ID, w.owner, message, now, delay); finishErr != nil {
+	// When the stop flow has already canceled the worker context, the sender's
+	// transient failure must not schedule another retry: that would write a new
+	// retry record that a later pass re-claims, producing fresh retry rows after
+	// the stop. Honor cancellation the same way the complete/final paths do and
+	// let the existing lease expire so no new retry is enqueued.
+	if parent.Err() != nil {
+		return fmt.Errorf("notification %d retry aborted by cancellation: %w: %w", job.NotificationID, err, parent.Err())
+	}
+	if finishErr := w.repo.RetryNotificationJob(parent, job.ID, w.owner, message, now, delay); finishErr != nil {
 		return errors.Join(err, finishErr)
 	}
 	return fmt.Errorf("notification %d scheduled for retry: %w", job.NotificationID, err)
-}
-
-func retryPersistenceContext(parent context.Context) context.Context {
-	if parent == nil {
-		return context.Background()
-	}
-	return context.WithoutCancel(parent)
 }
 
 func backoff(attempt int) time.Duration {
