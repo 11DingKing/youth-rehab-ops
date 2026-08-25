@@ -344,6 +344,48 @@ func TestConcurrentCorrectionAllowsOneVersionWinner(t *testing.T) {
 	}
 }
 
+func TestFailedCorrectionLeavesNoRevisionAndRetriesProduceSingleRevision(t *testing.T) {
+	store := openTestStore(t)
+	guardian := createUser(t, store, "guardian@example.test", domain.RoleGuardian)
+	reporter := createUser(t, store, "coach@example.test", domain.RoleCoach)
+	participant := createParticipant(t, store, guardian)
+	incident := createIncident(t, store, reporter, participant)
+
+	stale := repository.IncidentCorrection{BodyArea: "left ankle", OccurredAt: incident.OccurredAt,
+		Description: "corrected side", Reason: "witness correction", Expected: 99}
+	_, err := store.CorrectIncident(context.Background(), domain.Actor{UserID: reporter.ID, Role: reporter.Role, RequestID: "stale"},
+		incident.ID, stale)
+	if !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("stale correction returned %v", err)
+	}
+	var staleRevisions, staleAudit int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM incident_revisions WHERE incident_id=?`, incident.ID).Scan(&staleRevisions); err != nil || staleRevisions != 0 {
+		t.Fatalf("failed correction left revisions=%d err=%v", staleRevisions, err)
+	}
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM audit_events WHERE action='incident.corrected'`).Scan(&staleAudit); err != nil || staleAudit != 0 {
+		t.Fatalf("failed correction left audit events=%d err=%v", staleAudit, err)
+	}
+
+	// A normal retry at the still-current version must produce exactly one effective revision.
+	valid := repository.IncidentCorrection{BodyArea: "left ankle", OccurredAt: incident.OccurredAt,
+		Description: "corrected side after witness confirmation", Reason: "witness correction", Expected: 1}
+	updated, err := store.CorrectIncident(context.Background(), domain.Actor{UserID: reporter.ID, Role: reporter.Role, RequestID: "retry"},
+		incident.ID, valid)
+	if err != nil {
+		t.Fatalf("retry correction: %v", err)
+	}
+	if updated.BodyArea != "left ankle" || updated.Version != 2 {
+		t.Fatalf("retry result mismatch: %+v", updated)
+	}
+	var revisions, audit int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM incident_revisions WHERE incident_id=?`, incident.ID).Scan(&revisions); err != nil || revisions != 1 {
+		t.Fatalf("revision count=%d err=%v", revisions, err)
+	}
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM audit_events WHERE action='incident.corrected'`).Scan(&audit); err != nil || audit != 1 {
+		t.Fatalf("audit count=%d err=%v", audit, err)
+	}
+}
+
 func containsLocked(err error) bool {
 	return err != nil && (errors.Is(err, context.DeadlineExceeded) || stringContains(err.Error(), "locked") || stringContains(err.Error(), "busy"))
 }

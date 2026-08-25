@@ -110,22 +110,6 @@ func (s *Store) CorrectIncident(ctx context.Context, actor domain.Actor, id int6
 		if err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO incident_revisions(incident_id,revision,body_area,occurred_at,description,reason,corrected_by,created_at) VALUES(?,?,?,?,?,?,?,?)`,
-			plan.Revision.IncidentID, plan.Revision.Revision, plan.Revision.BodyArea, timeText(plan.Revision.OccurredAt), plan.Revision.Description,
-			plan.Revision.Reason, plan.Revision.CorrectedBy, timeText(plan.Revision.CreatedAt)); err != nil {
-			return fmt.Errorf("preserve incident revision: %w", err)
-		}
-		return nil
-	})
-	if err != nil {
-		return updated, err
-	}
-	err = withTx(ctx, s.db, func(tx *sql.Tx) error {
-		current, err := scanIncident(tx.QueryRowContext(ctx, incidentSelect+" WHERE i.id=?", id))
-		if err != nil {
-			return err
-		}
-		now := time.Now().UTC()
 		result, err := tx.ExecContext(ctx, `UPDATE incidents SET body_area=?,occurred_at=?,description=?,version=version+1,updated_at=? WHERE id=? AND version=?`,
 			correction.BodyArea, timeText(correction.OccurredAt), correction.Description, timeText(now), id, correction.Expected)
 		if err != nil {
@@ -133,6 +117,11 @@ func (s *Store) CorrectIncident(ctx context.Context, actor domain.Actor, id int6
 		}
 		if err := requireAffected(result, "incident"); err != nil {
 			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO incident_revisions(incident_id,revision,body_area,occurred_at,description,reason,corrected_by,created_at) VALUES(?,?,?,?,?,?,?,?)`,
+			plan.Revision.IncidentID, plan.Revision.Revision, plan.Revision.BodyArea, timeText(plan.Revision.OccurredAt), plan.Revision.Description,
+			plan.Revision.Reason, plan.Revision.CorrectedBy, timeText(plan.Revision.CreatedAt)); err != nil {
+			return fmt.Errorf("preserve incident revision: %w", err)
 		}
 		if err := appendAudit(ctx, tx, audit.Record{ActorID: actor.UserID, ActorRole: string(actor.Role), Action: "incident.corrected",
 			ObjectType: "incident", ObjectID: current.PublicID, Result: audit.Succeeded, Reason: correction.Reason, RequestID: actor.RequestID, CreatedAt: now}); err != nil {
