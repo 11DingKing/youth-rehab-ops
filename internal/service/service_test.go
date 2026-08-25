@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -265,6 +266,35 @@ func TestCareServiceKeepsClinicalDecisionsWithProfessionals(t *testing.T) {
 		"pain-free walking", "no running", "mobility and balance", serviceTime.Add(7*24*time.Hour))
 	if err != nil || version.Version != 1 {
 		t.Fatalf("PublishPlan=%+v err=%v", version, err)
+	}
+}
+
+func TestCanceledReferralLeavesIncidentUntouchedAndNoAudit(t *testing.T) {
+	fixture := newServiceFixture(t)
+	view, err := fixture.incidents.Report(context.Background(), actor(fixture.coach, "report"), reportInput(fixture.participant.ID, "cancel-referral"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	triaged, err := fixture.incidents.Triage(context.Background(), actor(fixture.officer, "triage"), view.ID,
+		service.TriageIncidentInput{Severity: domain.SeverityHigh, StopTraining: true, PublicGuidance: "seek evaluation", ExpectedVersion: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := fixture.care.Refer(ctx, actor(fixture.officer, "cancel-refer"), view.ID, "Youth Clinic", "persistent pain"); err == nil {
+		t.Fatal("canceled referral creation succeeded")
+	}
+	incident, err := fixture.store.GetIncident(context.Background(), view.ID)
+	if err != nil || incident.Status != domain.IncidentTriaged || incident.Version != triaged.Version {
+		t.Fatalf("incident mutated by canceled referral: %+v err=%v", incident, err)
+	}
+	page, err := fixture.store.ListAudit(context.Background(), "referral", fmt.Sprint(view.ID), domain.Page{Limit: 100})
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	if page.Total != 0 {
+		t.Fatalf("canceled referral left audit rows=%d", page.Total)
 	}
 }
 

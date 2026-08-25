@@ -34,8 +34,7 @@ func (s *Store) CreateReferral(ctx context.Context, actor domain.Actor, referral
 		if err := requireAffected(update, "incident"); err != nil {
 			return err
 		}
-		auditCtx := context.WithoutCancel(ctx)
-		return appendAudit(auditCtx, tx, audit.Record{ActorID: actor.UserID, ActorRole: string(actor.Role), Action: "referral.requested",
+		return appendAudit(ctx, tx, audit.Record{ActorID: actor.UserID, ActorRole: string(actor.Role), Action: "referral.requested",
 			ObjectType: "referral", ObjectID: fmt.Sprint(referral.ID), Result: audit.Succeeded, RequestID: actor.RequestID, CreatedAt: referral.CreatedAt})
 	})
 	return referral, err

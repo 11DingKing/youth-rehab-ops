@@ -29,8 +29,7 @@ func (s *CareService) Refer(ctx context.Context, actor domain.Actor, incidentID 
 	if err := referral.Validate(); err != nil {
 		return domain.Referral{}, err
 	}
-	persistCtx := context.WithoutCancel(ctx)
-	return s.repo.CreateReferral(persistCtx, actor, referral)
+	return s.repo.CreateReferral(ctx, actor, referral)
 }
 
 func (s *CareService) AcceptReferral(ctx context.Context, actor domain.Actor, id, expected int64) (domain.Referral, error) {
