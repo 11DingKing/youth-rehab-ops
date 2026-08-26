@@ -1,0 +1,8 @@
+.git
+.gomark-authoring
+data
+*.db
+*.db-shm
+*.db-wal
+bin
+coverage.out
